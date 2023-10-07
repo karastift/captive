@@ -26,7 +26,6 @@ redirections to:	$redirection_address
 
 echo -e "\n[!] Press Ctrl+C to stop the access point"
 
-exit
 log() {
 	to_log=$1
 
