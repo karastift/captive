@@ -1,0 +1,109 @@
+#!/bin/bash
+
+# captive-ap.sh is a script to start an access point configured to redirect clients to a captive portal.
+
+# Set and check arguments
+interface=$1
+ssid=$2
+ap_address="10.0.0.1"
+redirection_address=$ap_address
+channel="1"
+dhcp_range="10.0.0.10,10.0.0.100"
+lease_time="8h"
+
+# Prolog
+echo "captive - kara
+
+ssid:			$ssid
+interface:		$interface
+channel:		$channel
+gateway address:	$ap_address
+dhcp range:		$dhcp_range
+lease time:		$lease_time
+dns server address:	$ap_address
+redirections to:	$redirection_address
+"
+
+echo -e "\n[!] Press Ctrl+C to stop the access point"
+
+exit
+log() {
+	to_log=$1
+
+	echo "[$(date '+%H:%M:%S')] $to_log"
+}
+
+# Kill active dnsmasq and hostapd processes
+log "Checking for active dnsmasq, hostapd processes"
+if pgrep -x "dnsmasq" > /dev/null
+then
+    log "dnsmasq is running. Trying to terminate it..."
+    sudo kill $(pgrep -x "dnsmasq")
+else
+    log "Didn't find any dnsmasq process"
+fi
+if pgrep -x "hostapd" > /dev/null
+then
+    log "hostapd is running. Trying to terminate it..."
+    sudo kill $(pgrep -x "hostapd")
+else
+    log "Didn't find any hostapd process"
+fi
+
+# Configure $interface to use a static ip (10.0.0.1)
+log "Setting $interface to have a static ip of 10.0.0.1"
+ifconfig "$interface" 10.0.0.1 netmask 255.255.255.0
+
+# Enable ip forwarding
+log "Enabling ip forwarding"
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# Configure ip tables to not drop packets
+# Remove old iptables rules that might interfere
+log "Flushing iptables rules"
+iptables --flush
+iptables --table nat --flush
+iptables --delete-chain
+iptables --table nat --delete-chain
+
+# Allow ip forwarding
+log "Enabling ip forwarding in iptables"
+iptables -P FORWARD ACCEPT
+
+# -i specifies interfaces used to the argument $interface
+# --address redirects all requests to $redirection_address
+# --dhcp-range sets ip range that can be given to clients and the time for how long one can own an address
+# --dhcp-option 3 sets the gateway ip address
+# --dhcp-option 6 sets dns server address
+log "Starting dnsmasq with interface '$interface' on address '$ap_address'"
+dnsmasq -i "$interface" --address="/#/$redirection_address" --dhcp-range="$dhcp_range,$lease_time" --dhcp-option="3,$ap_address" --dhcp-option="6,$ap_address"
+
+# Create a temporary hostapd configuration file
+TEMP_CONFIG=$(mktemp)
+log "Creating temporary config file for hostapd: $TEMP_CONFIG"
+
+echo "interface=$interface" >> "$TEMP_CONFIG"
+echo "ssid=$ssid" >> "$TEMP_CONFIG"
+echo "channel=$channel" >> "$TEMP_CONFIG"
+echo "driver=nl80211" >> "$TEMP_CONFIG"
+
+# Create a temporary hostapd log file
+TEMP_HOSTAPD_LOG=$(mktemp)
+log "Creating temporary hostapd log file: $TEMP_HOSTAPD_LOG"
+
+# Start access point
+log "Starting hostapd with interface '$interface' and ssid '$ssid'"
+hostapd "$TEMP_CONFIG" -f "$TEMP_HOSTAPD_LOG" -B
+
+process_log() {
+	tail -n 0 -f "$TEMP_HOSTAPD_LOG" | while read -r line; do
+		log "$line"
+	done
+}
+
+process_log &
+
+# Clean up: remove the temporary configuration file and kill hostapd and dnsmasq
+trap 'echo; log "Exiting..."; pkill dnsmasq; pkill hostapd; pkill -P $$; rm -f "$TEMP_CONFIG"; exit' INT
+
+sleep infinity
